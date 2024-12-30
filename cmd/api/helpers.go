@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/julienschmidt/httprouter"
 )
@@ -43,10 +44,14 @@ func (app *application) writeJSON(w http.ResponseWriter, status int, data envelo
 }
 
 func (app *application) readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	// limit the size of the request
 	maxBytes := 1_048_576
 	r.Body = http.MaxBytesReader(w, r.Body, int64(maxBytes))
 
 	dec := json.NewDecoder(r.Body)
+
+	// disallow unknown fields - if a field is passed with JSON that cannot be mapped to target
+	// destination, return an error instead of just ignoring it
 	dec.DisallowUnknownFields()
 
 	err := dec.Decode(&dst)
@@ -79,6 +84,14 @@ func (app *application) readJSON(w http.ResponseWriter, r *http.Request, dst any
 			// handle empty bodies
 			return errors.New("body must not be empty")
 
+		case strings.HasPrefix(err.Error(), "json: unknown field "):
+			// handle cases where an unknown field has been passed through
+			fieldName := strings.TrimPrefix(err.Error(), "json: unknown field ")
+			return fmt.Errorf("body contains unknown key %s", fieldName)
+
+		case errors.As(err, &maxBytesError):
+			return fmt.Errorf("body must not be larger than %d bytes", maxBytesError.Limit)
+
 		case errors.As(err, &invalidUnmarshalError):
 			// handle when non-nil pointer is passed to Decode method
 			panic(err)
@@ -88,5 +101,11 @@ func (app *application) readJSON(w http.ResponseWriter, r *http.Request, dst any
 
 		}
 	}
+
+	err = dec.Decode(&struct{}{})
+	if err != nil {
+		return errors.New("body must only contain a single JSON value")
+	}
+
 	return nil
 }
